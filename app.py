@@ -7,12 +7,46 @@ from flask import session, redirect, url_for, render_template, request, jsonify
 import os
 import hashlib
 import hmac
-
+import ipaddress
 
 
 app = Flask(__name__)
 app.secret_key = "CHANGE_THIS_TO_A_RANDOM_SECRET"
 DB_PATH = Path("room.db")
+# ================== CAMPUS NETWORK RESTRICTION ==================
+
+# Allow only private (campus) networks
+ALLOWED_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+]
+
+def get_client_ip():
+    # If behind proxy, first IP in X-Forwarded-For
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote_addr
+
+@app.before_request
+def require_campus_wifi():
+    ip_str = get_client_ip()
+     if ip_str in ("127.0.0.1", "::1"):
+        return  # allow localhost
+
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return "Invalid IP", 400
+
+    if not any(ip in net for net in ALLOWED_NETS):
+        return (
+            "❌ This system works only on Holberton - Students Wi-Fi.",
+            403
+        )
+
+# ===============================================================
 
 BUILDING_LAT = 40.40663934042372   # <- replace with your real location
 BUILDING_LON = 49.848206791133954   # <- replace with your real location
@@ -105,7 +139,10 @@ def init_db():
             token TEXT NOT NULL UNIQUE,
             is_busy INTEGER NOT NULL DEFAULT 0,
             user_name TEXT DEFAULT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            busy_user_id INTEGER DEFAULT NULL,
+            last_seen TEXT DEFAULT NULL
+
         )
     """)
     conn.commit()
@@ -290,6 +327,106 @@ def verify_scan():
 
     conn.close()
     return jsonify({"ok": True, "pc_id": pc_id, "distance_m": round(dist, 1)})
+
+@app.route("/api/pc_action", methods=["POST"])
+def pc_action():
+    cleanup_stale_sessions()
+
+    if not session.get("user_id"):
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    data = request.get_json(force=True)
+    pc_id = data.get("pc_id")
+    token = data.get("token")
+    action = data.get("action")  # "start" or "finish"
+    lat = data.get("lat")
+    lon = data.get("lon")
+    accuracy = data.get("accuracy")
+
+    if not pc_id or not token or action not in ("start", "finish") or lat is None or lon is None or accuracy is None:
+        return jsonify({"ok": False, "error": "missing_fields"}), 400
+
+    lat = float(lat); lon = float(lon); accuracy = float(accuracy)
+
+    if accuracy > MAX_ACCURACY_METERS:
+        return jsonify({"ok": False, "error": "low_accuracy", "accuracy": accuracy}), 403
+
+    dist = haversine_m(lat, lon, BUILDING_LAT, BUILDING_LON)
+    if dist > RADIUS_METERS:
+        return jsonify({"ok": False, "error": "too_far", "distance_m": round(dist, 1)}), 403
+
+    user_id = int(session["user_id"])
+    student_name = session.get("student_name") or "Student"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT is_busy, busy_user_id FROM computers WHERE id=? AND token=?",
+        (pc_id, token)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    # START
+    if action == "start":
+        if row["is_busy"] == 1:
+            conn.close()
+            return jsonify({"ok": False, "error": "already_busy"}), 409
+
+        conn.execute("""
+            UPDATE computers
+            SET is_busy=1, busy_user_id=?, user_name=?, last_seen=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (user_id, student_name, pc_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "action": "started", "distance_m": round(dist, 1)})
+
+    # FINISH
+    if action == "finish":
+        if row["is_busy"] == 0:
+            conn.close()
+            return jsonify({"ok": False, "error": "already_free"}), 409
+
+        if row["busy_user_id"] != user_id:
+            conn.close()
+            return jsonify({"ok": False, "error": "not_owner"}), 403
+
+        conn.execute("""
+            UPDATE computers
+            SET is_busy=0, busy_user_id=NULL, user_name=NULL, last_seen=NULL, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+        """, (pc_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "action": "stopped", "distance_m": round(dist, 1)})
+
+@app.route("/api/heartbeat", methods=["POST"])
+def heartbeat():
+    if not session.get("user_id"):
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    data = request.get_json(force=True)
+    pc_id = data.get("pc_id")
+    token = data.get("token")
+    if not pc_id or not token:
+        return jsonify({"ok": False, "error": "missing_fields"}), 400
+
+    user_id = int(session["user_id"])
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT is_busy, busy_user_id FROM computers WHERE id=? AND token=?",
+        (pc_id, token)
+    ).fetchone()
+
+    if row and row["is_busy"] == 1 and row["busy_user_id"] == user_id:
+        conn.execute("UPDATE computers SET last_seen=CURRENT_TIMESTAMP WHERE id=?", (pc_id,))
+        conn.commit()
+
+    conn.close()
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
