@@ -32,7 +32,7 @@ def get_client_ip():
 @app.before_request
 def require_campus_wifi():
     ip_str = get_client_ip()
-     if ip_str in ("127.0.0.1", "::1"):
+    if ip_str in ("127.0.0.1", "::1"):
         return  # allow localhost
 
     try:
