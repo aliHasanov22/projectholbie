@@ -5,6 +5,131 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Computer Room Status</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    /* Small header auth bar */
+    .authbar{
+      display:flex;
+      gap:12px;
+      align-items:center;
+      justify-content:flex-end;
+      margin-top:10px;
+      flex-wrap:wrap;
+    }
+    .authbar a{
+      color:#2563eb;
+      text-decoration:none;
+      font-weight:600;
+    }
+    .pill{
+      display:inline-flex;
+      gap:8px;
+      align-items:center;
+      padding:8px 10px;
+      border:1px solid #cbd5e1;
+      border-radius:999px;
+      background:#fff;
+      font-size:13px;
+      color:#0f172a;
+    }
+    .note{
+      margin-top:10px;
+      color:#64748b;
+      font-size:13px;
+    }
+    /* Make PCs NOT clickable (view-only) */
+    .pc{
+      cursor: default !important;
+      pointer-events: none; /* prevents toggling from UI */
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div>
+      <h1>💻 Computer Room Live Status</h1>
+      <p>Green = free • Red = in use</p>
+
+      <div class="authbar">
+        {% if user %}
+          <span class="pill">👤 {{ user["full_name"] }} ({{ user["username"] }})</span>
+          <a class="pill" href="/logout">Logout</a>
+        {% else %}
+          <a class="pill" href="/login">Login</a>
+          <a class="pill" href="/register">Register</a>
+        {% endif %}
+      </div>
+
+      <div class="note">
+        ✅ To use a PC, scan the QR code on the table. Students cannot change status from this page.
+      </div>
+    </div>
+
+    <div class="namebox">
+      <label>Status</label>
+      <div class="pill" id="statsPill">Loading…</div>
+    </div>
+  </header>
+
+  <main class="room-wrap">
+    <section class="block">
+      <h2>Left side</h2>
+      <div class="grid">
+        {% for row in layout.left %}
+          {% for pc in row %}
+            {% if pc %}
+              <div class="pc free" data-pc="{{ pc }}" title="{{ pc }}">
+                <span class="pc-id">{{ pc }}</span>
+                <span class="pc-user"></span>
+              </div>
+            {% else %}
+              <div class="empty"></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <div class="aisle">
+      <div class="aisle-line"></div>
+      <div class="aisle-text">AISLE</div>
+      <div class="aisle-line"></div>
+    </div>
+
+    <section class="block">
+      <h2>Right side</h2>
+      <div class="grid">
+        {% for row in layout.right %}
+          {% for pc in row %}
+            {% if pc %}
+              <div class="pc free" data-pc="{{ pc }}" title="{{ pc }}">
+                <span class="pc-id">{{ pc }}</span>
+                <span class="pc-user"></span>
+              </div>
+            {% else %}
+              <div class="empty"></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <button id="refreshBtn">Refresh</button>
+    <span id="statusText">Loading…</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Computer Room Status</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <header class="topbar">
