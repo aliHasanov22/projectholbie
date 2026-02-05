@@ -1,6 +1,8 @@
 from flask import Flask, jsonify, render_template, request
 import sqlite3
 from pathlib import Path
+from flask import abort
+
 
 app = Flask(__name__)
 DB_PATH = Path("room.db")
@@ -52,7 +54,8 @@ def init_db():
             id TEXT PRIMARY KEY,
             is_busy INTEGER NOT NULL DEFAULT 0,
             user_name TEXT DEFAULT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            token TEXT UNIQUE
         )
         """
     )
@@ -121,6 +124,53 @@ def api_toggle():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "pc_id": pc_id, "is_busy": bool(new_busy)})
+#new updates
+@app.route("/pc/<pc_id>")
+def pc_page(pc_id):
+    token = request.args.get("token")
+    if not token:
+        abort(403)
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, is_busy, user_name FROM computers WHERE id=? AND token=?",
+        (pc_id, token)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        abort(403)
+
+    return render_template("pc.html", pc_id=pc_id, is_busy=bool(row["is_busy"]), user_name=row["user_name"])
+
+@app.route("/api/pc_action", methods=["POST"])
+def pc_action():
+    data = request.get_json(force=True)
+    pc_id = data["pc_id"]
+    token = data["token"]
+    action = data["action"]  # "start" or "finish"
+    user_name = data.get("user_name")
+
+    conn = get_db()
+    row = conn.execute("SELECT id FROM computers WHERE id=? AND token=?", (pc_id, token)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "forbidden"}), 403
+
+    if action == "start":
+        conn.execute("UPDATE computers SET is_busy=1, user_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (user_name or None, pc_id))
+    elif action == "finish":
+        conn.execute("UPDATE computers SET is_busy=0, user_name=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (pc_id,))
+    else:
+        conn.close()
+        return jsonify({"error": "bad action"}), 400
+
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
 
 
 @app.route("/api/set", methods=["POST"])
