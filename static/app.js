@@ -4,63 +4,45 @@ async function fetchStatus(){
 }
 
 function applyStatus(data){
-  const pcs = document.querySelectorAll(".pc[data-pc]");
+  const pcs = document.querySelectorAll("[data-pc]");
   let busyCount = 0;
 
-  pcs.forEach(btn => {
-    const id = btn.dataset.pc;
+  pcs.forEach(el => {
+    const id = el.dataset.pc;
     const info = data[id];
-
     if (!info) return;
 
     const isBusy = info.is_busy === true;
-    btn.classList.toggle("busy", isBusy);
-    btn.classList.toggle("free", !isBusy);
+    el.classList.toggle("busy", isBusy);
+    el.classList.toggle("free", !isBusy);
 
-    const userSpan = btn.querySelector(".pc-user");
+    const userSpan = el.querySelector(".pc-user");
     userSpan.textContent = isBusy ? (info.user_name || "In use") : "";
 
     if (isBusy) busyCount++;
   });
 
-  const statusText = document.getElementById("statusText");
-  statusText.textContent = `Busy: ${busyCount} • Free: ${pcs.length - busyCount} • Updated: ${new Date().toLocaleTimeString()}`;
+  const total = pcs.length;
+  const free = total - busyCount;
+
+  document.getElementById("statusText").textContent =
+    `Busy: ${busyCount} • Free: ${free} • Updated: ${new Date().toLocaleTimeString()}`;
+
+  const statsPill = document.getElementById("statsPill");
+  if (statsPill) statsPill.textContent = `Busy: ${busyCount} • Free: ${free} • Total: ${total}`;
 }
 
-async function togglePC(pcId){
-  const studentName = document.getElementById("studentName").value.trim();
-
-  await fetch("/api/toggle", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ pc_id: pcId, user_name: studentName || null })
-  });
-
-  // refresh after toggle
+async function refresh(){
   const data = await fetchStatus();
   applyStatus(data);
 }
 
 async function init(){
-  // click handlers
-  document.querySelectorAll(".pc[data-pc]").forEach(btn => {
-    btn.addEventListener("click", () => togglePC(btn.dataset.pc));
-  });
+  document.getElementById("refreshBtn").addEventListener("click", refresh);
+  await refresh();
 
-  document.getElementById("refreshBtn").addEventListener("click", async () => {
-    const data = await fetchStatus();
-    applyStatus(data);
-  });
-
-  // initial load
-  const data = await fetchStatus();
-  applyStatus(data);
-
-  // auto-refresh every 2 seconds
-  setInterval(async () => {
-    const data = await fetchStatus();
-    applyStatus(data);
-  }, 2000);
+  // Auto refresh every 2 seconds
+  setInterval(refresh, 2000);
 }
 
 init();
