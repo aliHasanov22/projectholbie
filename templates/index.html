@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Computer Room Status</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>💻 Computer Room Live Status</h1>
+      <p>Green = free • Red = in use • Click a PC to toggle</p>
+    </div>
+
+    <div class="namebox">
+      <label>Student name (optional)</label>
+      <input id="studentName" placeholder="e.g., Ali Hasan" />
+    </div>
+  </header>
+
+  <main class="room-wrap">
+    <section class="block">
+      <h2>Left side</h2>
+      <div class="grid">
+        {% for row in layout.left %}
+          {% for pc in row %}
+            {% if pc %}
+              <button class="pc free" data-pc="{{ pc }}" title="{{ pc }}">
+                <span class="pc-id">{{ pc }}</span>
+                <span class="pc-user"></span>
+              </button>
+            {% else %}
+              <div class="empty"></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <div class="aisle">
+      <div class="aisle-line"></div>
+      <div class="aisle-text">AISLE</div>
+      <div class="aisle-line"></div>
+    </div>
+
+    <section class="block">
+      <h2>Right side</h2>
+      <div class="grid">
+        {% for row in layout.right %}
+          {% for pc in row %}
+            {% if pc %}
+              <button class="pc free" data-pc="{{ pc }}" title="{{ pc }}">
+                <span class="pc-id">{{ pc }}</span>
+                <span class="pc-user"></span>
+              </button>
+            {% else %}
+              <div class="empty"></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <button id="refreshBtn">Refresh</button>
+    <span id="statusText">Loading…</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
