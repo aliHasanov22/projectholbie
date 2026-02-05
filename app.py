@@ -2,10 +2,18 @@ from flask import Flask, jsonify, render_template, request
 import sqlite3
 from pathlib import Path
 from flask import abort
+import math
+from flask import session, redirect, url_for, render_template, request, jsonify
+
 
 
 app = Flask(__name__)
 DB_PATH = Path("room.db")
+
+BUILDING_LAT = 40.4093   # <- replace with your real location
+BUILDING_LON = 49.8671   # <- replace with your real location
+RADIUS_METERS = 40
+MAX_ACCURACY_METERS = 30  # reject bad GPS readings
 
 # ====== CONFIG: define your room layout here ======
 # Each "block" is a list of rows; each row is a list of pc IDs (or None for empty space).
@@ -77,6 +85,15 @@ def init_db():
     conn.commit()
     conn.close()
 
+def haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000  # meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
 
 @app.route("/")
 def index():
@@ -197,6 +214,71 @@ def api_set():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+@app.route("/scan/<pc_id>")
+def scan(pc_id):
+    token = request.args.get("token")
+    if not token:
+        return "Forbidden", 403
+
+    # Require student identity (simple session name; replace with real login later)
+    if not session.get("student_name"):
+        return redirect(url_for("login", next=request.full_path))
+
+    return render_template("scan.html", pc_id=pc_id, token=token)
+
+
+@app.route("/api/verify_scan", methods=["POST"])
+def verify_scan():
+    data = request.get_json(force=True)
+    pc_id = data.get("pc_id")
+    token = data.get("token")
+    lat = data.get("lat")
+    lon = data.get("lon")
+    accuracy = data.get("accuracy")
+
+    student_name = session.get("student_name")
+    if not student_name:
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
+    # basic validations
+    if not pc_id or not token or lat is None or lon is None or accuracy is None:
+        return jsonify({"ok": False, "error": "missing_fields"}), 400
+
+    try:
+        lat = float(lat); lon = float(lon); accuracy = float(accuracy)
+    except ValueError:
+        return jsonify({"ok": False, "error": "bad_location"}), 400
+
+    # accuracy gate (prevents “I’m somewhere far but accuracy says 1000m”)
+    if accuracy > MAX_ACCURACY_METERS:
+        return jsonify({"ok": False, "error": "low_accuracy", "accuracy": accuracy}), 403
+
+    # distance check
+    dist = haversine_m(lat, lon, BUILDING_LAT, BUILDING_LON)
+    if dist > RADIUS_METERS:
+        return jsonify({"ok": False, "error": "too_far", "distance_m": round(dist, 1)}), 403
+
+    # token check + mark busy
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, is_busy FROM computers WHERE id=? AND token=?",
+        (pc_id, token)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    if row["is_busy"] == 0:
+        conn.execute(
+            "UPDATE computers SET is_busy=1, user_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (student_name, pc_id)
+        )
+        conn.commit()
+
+    conn.close()
+    return jsonify({"ok": True, "pc_id": pc_id, "distance_m": round(dist, 1)})
 
 
 if __name__ == "__main__":
