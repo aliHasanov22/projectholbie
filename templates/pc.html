@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ pc_id }}</title>
+  <style>
+    body{font-family:system-ui;background:#f4f6f8;margin:0;padding:18px}
+    .card{background:#fff;border:1px solid #cbd5e1;border-radius:14px;padding:16px;max-width:520px;margin:0 auto}
+    .status{font-weight:700;margin:10px 0}
+    .btn{width:100%;padding:14px;border:0;border-radius:12px;font-size:16px;cursor:pointer;margin-top:10px}
+    .start{background:#22c55e}
+    .finish{background:#ef4444}
+    input{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-size:15px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Computer: {{ pc_id }}</h2>
+
+    <div class="status">
+      Status:
+      {% if is_busy %}
+        🔴 In use {% if user_name %} ({{ user_name }}) {% endif %}
+      {% else %}
+        🟢 Free
+      {% endif %}
+    </div>
+
+    <label>Your name (optional)</label>
+    <input id="name" placeholder="Ali Hasan" />
+
+    {% if not is_busy %}
+      <button class="btn start" onclick="action('start')">Start using</button>
+    {% else %}
+      <button class="btn finish" onclick="action('finish')">Finish / Free computer</button>
+    {% endif %}
+  </div>
+
+<script>
+  const pc_id = "{{ pc_id }}";
+  const token = new URLSearchParams(location.search).get("token");
+
+  async function action(act){
+    const user_name = document.getElementById("name").value.trim();
+    await fetch("/api/pc_action", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ pc_id, token, action: act, user_name: user_name || null })
+    });
+    location.reload();
+  }
+</script>
+</body>
+</html>
