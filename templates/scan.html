@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" />
+  <title>Scan {{ pc_id }}</title>
+  <style>
+    body{font-family:system-ui;background:#f4f6f8;margin:0;padding:18px}
+    .card{max-width:520px;margin:0 auto;background:#fff;border:1px solid #cbd5e1;border-radius:14px;padding:16px}
+    .muted{color:#64748b}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Computer: {{ pc_id }}</h2>
+    <p class="muted" id="msg">Requesting location…</p>
+  </div>
+
+<script>
+const pc_id = "{{ pc_id }}";
+const token = "{{ token }}";
+const msg = document.getElementById("msg");
+
+function fail(text){
+  msg.textContent = text;
+}
+
+if (!navigator.geolocation) {
+  fail("Geolocation not supported on this device.");
+} else {
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    msg.textContent = "Verifying you are in the building…";
+
+    const payload = {
+      pc_id,
+      token,
+      lat: pos.coords.latitude,
+      lon: pos.coords.longitude,
+      accuracy: pos.coords.accuracy
+    };
+
+    const res = await fetch("/api/verify_scan", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+
+    if (data.ok) {
+      msg.textContent = `✅ Marked as IN USE. Distance: ${data.distance_m}m`;
+    } else {
+      if (data.error === "too_far") {
+        fail(`❌ Too far from building (${data.distance_m}m). Go closer and rescan.`);
+      } else if (data.error === "low_accuracy") {
+        fail(`❌ GPS accuracy is too low (${data.accuracy}m). Move near a window and rescan.`);
+      } else {
+        fail("❌ Verification failed: " + data.error);
+      }
+    }
+  }, (err) => {
+    fail("❌ Location permission denied. Enable location and rescan.");
+  }, {
+    enableHighAccuracy: true,
+    timeout: 12000,
+    maximumAge: 0
+  });
+}
+</script>
+</body>
+</html>
