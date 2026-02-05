@@ -8,6 +8,7 @@ from flask import session, redirect, url_for, render_template, request, jsonify
 
 
 app = Flask(__name__)
+app.secret_key = "CHANGE_THIS_TO_A_RANDOM_SECRET"
 DB_PATH = Path("room.db")
 
 BUILDING_LAT = 40.4093   # <- replace with your real location
@@ -54,175 +55,185 @@ def get_db():
     return conn
 
 
+def haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dl/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+
+def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
+    """Returns (salt_hex, hash_hex). Uses PBKDF2-HMAC-SHA256."""
+    if salt is None:
+        salt = os.urandom(16)
+    pwd = password.encode("utf-8")
+    dk = hashlib.pbkdf2_hmac("sha256", pwd, salt, 200_000)
+    return salt.hex(), dk.hex()
+
+
+def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
+    salt = bytes.fromhex(salt_hex)
+    _, computed = hash_password(password, salt=salt)
+    return hmac.compare_digest(computed, hash_hex)
+
+
 def init_db():
     conn = get_db()
-    conn.execute(
-        """
+
+    # Users table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            username TEXT NOT NULL UNIQUE,
+            salt_hex TEXT NOT NULL,
+            hash_hex TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Computers table (token required for QR security)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS computers (
             id TEXT PRIMARY KEY,
+            token TEXT NOT NULL UNIQUE,
             is_busy INTEGER NOT NULL DEFAULT 0,
             user_name TEXT DEFAULT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            token TEXT UNIQUE
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
+    """)
     conn.commit()
 
-    # Ensure all PCs in layout exist in DB
+    # Ensure PCs exist with token
     all_pcs = []
     for side in ("left", "right"):
-        for row in ROOM_LAYOUT[side]:
+        for row in ROOM_LAYOUT.get(side, []):
             for pc in row:
                 if pc:
                     all_pcs.append(pc)
 
     for pc_id in all_pcs:
+        # create token if missing
+        token = os.urandom(12).hex()
         conn.execute(
-            "INSERT OR IGNORE INTO computers (id, is_busy, user_name) VALUES (?, 0, NULL)",
-            (pc_id,),
+            "INSERT OR IGNORE INTO computers (id, token, is_busy, user_name) VALUES (?, ?, 0, NULL)",
+            (pc_id, token)
         )
+        # if exists but token empty (unlikely), keep it safe
+        conn.execute(
+            "UPDATE computers SET token=COALESCE(NULLIF(token,''), ?) WHERE id=?",
+            (token, pc_id)
+        )
+
     conn.commit()
     conn.close()
 
-def haversine_m(lat1, lon1, lat2, lon2):
-    R = 6371000  # meters
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
 
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
+def current_user():
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    conn = get_db()
+    user = conn.execute("SELECT id, full_name, username FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    return user
+
 
 @app.route("/")
 def index():
-    return render_template("index.html", layout=ROOM_LAYOUT)
+    return render_template("index.html", layout=ROOM_LAYOUT, user=current_user())
 
 
-@app.route("/api/status", methods=["GET"])
+# ---------- AUTH ----------
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        username = request.form.get("username", "").strip().lower()
+        password = request.form.get("password", "")
+        password2 = request.form.get("password2", "")
+
+        if len(full_name) < 2:
+            return render_template("register.html", error="Full name is too short.")
+        if len(username) < 3 or " " in username:
+            return render_template("register.html", error="Username must be at least 3 chars, no spaces.")
+        if len(password) < 6:
+            return render_template("register.html", error="Password must be at least 6 chars.")
+        if password != password2:
+            return render_template("register.html", error="Passwords do not match.")
+
+        salt_hex, hash_hex = hash_password(password)
+
+        try:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO users (full_name, username, salt_hex, hash_hex) VALUES (?, ?, ?, ?)",
+                (full_name, username, salt_hex, hash_hex),
+            )
+            conn.commit()
+            user = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+            conn.close()
+
+            session["user_id"] = user["id"]
+            session["student_name"] = full_name  # used for marking PC
+            return redirect(url_for("index"))
+        except sqlite3.IntegrityError:
+            return render_template("register.html", error="Username already exists.")
+
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    next_url = request.args.get("next") or url_for("index")
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
+        password = request.form.get("password", "")
+
+        conn = get_db()
+        user = conn.execute(
+            "SELECT id, full_name, username, salt_hex, hash_hex FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+        conn.close()
+
+        if not user or not verify_password(password, user["salt_hex"], user["hash_hex"]):
+            return render_template("login.html", error="Wrong username or password.", next_url=next_url)
+
+        session["user_id"] = user["id"]
+        session["student_name"] = user["full_name"]
+        return redirect(next_url)
+
+    return render_template("login.html", next_url=next_url)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("index"))
+
+
+# ---------- API: STATUS ----------
+@app.route("/api/status")
 def api_status():
     conn = get_db()
     rows = conn.execute("SELECT id, is_busy, user_name FROM computers").fetchall()
     conn.close()
-    data = {r["id"]: {"is_busy": bool(r["is_busy"]), "user_name": r["user_name"]} for r in rows}
-    return jsonify(data)
+    return jsonify({r["id"]: {"is_busy": bool(r["is_busy"]), "user_name": r["user_name"]} for r in rows})
 
 
-@app.route("/api/toggle", methods=["POST"])
-def api_toggle():
-    payload = request.get_json(force=True)
-    pc_id = payload.get("pc_id")
-    user_name = payload.get("user_name")  # optional
-
-    if not pc_id:
-        return jsonify({"error": "pc_id required"}), 400
-
-    conn = get_db()
-    row = conn.execute("SELECT is_busy FROM computers WHERE id=?", (pc_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "unknown pc_id"}), 404
-
-    new_busy = 0 if row["is_busy"] else 1
-
-    # If busy, store user_name; if freeing, clear it
-    if new_busy == 1:
-        conn.execute(
-            "UPDATE computers SET is_busy=1, user_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (user_name or None, pc_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE computers SET is_busy=0, user_name=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (pc_id,),
-        )
-
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "pc_id": pc_id, "is_busy": bool(new_busy)})
-#new updates
-@app.route("/pc/<pc_id>")
-def pc_page(pc_id):
-    token = request.args.get("token")
-    if not token:
-        abort(403)
-
-    conn = get_db()
-    row = conn.execute(
-        "SELECT id, is_busy, user_name FROM computers WHERE id=? AND token=?",
-        (pc_id, token)
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        abort(403)
-
-    return render_template("pc.html", pc_id=pc_id, is_busy=bool(row["is_busy"]), user_name=row["user_name"])
-
-@app.route("/api/pc_action", methods=["POST"])
-def pc_action():
-    data = request.get_json(force=True)
-    pc_id = data["pc_id"]
-    token = data["token"]
-    action = data["action"]  # "start" or "finish"
-    user_name = data.get("user_name")
-
-    conn = get_db()
-    row = conn.execute("SELECT id FROM computers WHERE id=? AND token=?", (pc_id, token)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "forbidden"}), 403
-
-    if action == "start":
-        conn.execute("UPDATE computers SET is_busy=1, user_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                     (user_name or None, pc_id))
-    elif action == "finish":
-        conn.execute("UPDATE computers SET is_busy=0, user_name=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                     (pc_id,))
-    else:
-        conn.close()
-        return jsonify({"error": "bad action"}), 400
-
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-
-@app.route("/api/set", methods=["POST"])
-def api_set():
-    payload = request.get_json(force=True)
-    pc_id = payload.get("pc_id")
-    is_busy = payload.get("is_busy")
-    user_name = payload.get("user_name")
-
-    if pc_id is None or is_busy is None:
-        return jsonify({"error": "pc_id and is_busy required"}), 400
-
-    conn = get_db()
-    if int(is_busy) == 1:
-        conn.execute(
-            "UPDATE computers SET is_busy=1, user_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (user_name or None, pc_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE computers SET is_busy=0, user_name=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (pc_id,),
-        )
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
+# ---------- QR SCAN (auto mark busy with GPS check) ----------
 @app.route("/scan/<pc_id>")
 def scan(pc_id):
     token = request.args.get("token")
     if not token:
         return "Forbidden", 403
 
-    # Require student identity (simple session name; replace with real login later)
-    if not session.get("student_name"):
+    if not session.get("user_id"):
         return redirect(url_for("login", next=request.full_path))
 
     return render_template("scan.html", pc_id=pc_id, token=token)
@@ -230,6 +241,9 @@ def scan(pc_id):
 
 @app.route("/api/verify_scan", methods=["POST"])
 def verify_scan():
+    if not session.get("user_id"):
+        return jsonify({"ok": False, "error": "not_logged_in"}), 401
+
     data = request.get_json(force=True)
     pc_id = data.get("pc_id")
     token = data.get("token")
@@ -237,11 +251,6 @@ def verify_scan():
     lon = data.get("lon")
     accuracy = data.get("accuracy")
 
-    student_name = session.get("student_name")
-    if not student_name:
-        return jsonify({"ok": False, "error": "not_logged_in"}), 401
-
-    # basic validations
     if not pc_id or not token or lat is None or lon is None or accuracy is None:
         return jsonify({"ok": False, "error": "missing_fields"}), 400
 
@@ -250,16 +259,15 @@ def verify_scan():
     except ValueError:
         return jsonify({"ok": False, "error": "bad_location"}), 400
 
-    # accuracy gate (prevents “I’m somewhere far but accuracy says 1000m”)
     if accuracy > MAX_ACCURACY_METERS:
         return jsonify({"ok": False, "error": "low_accuracy", "accuracy": accuracy}), 403
 
-    # distance check
     dist = haversine_m(lat, lon, BUILDING_LAT, BUILDING_LON)
     if dist > RADIUS_METERS:
         return jsonify({"ok": False, "error": "too_far", "distance_m": round(dist, 1)}), 403
 
-    # token check + mark busy
+    student_name = session.get("student_name") or "Student"
+
     conn = get_db()
     row = conn.execute(
         "SELECT id, is_busy FROM computers WHERE id=? AND token=?",
@@ -283,4 +291,5 @@ def verify_scan():
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True)
+    # IMPORTANT for phones on same WiFi:
+    app.run(host="0.0.0.0", port=5000, debug=True)
