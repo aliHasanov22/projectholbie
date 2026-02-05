@@ -4,6 +4,9 @@ from pathlib import Path
 from flask import abort
 import math
 from flask import session, redirect, url_for, render_template, request, jsonify
+import os
+import hashlib
+import hmac
 
 
 
@@ -11,10 +14,10 @@ app = Flask(__name__)
 app.secret_key = "CHANGE_THIS_TO_A_RANDOM_SECRET"
 DB_PATH = Path("room.db")
 
-BUILDING_LAT = 40.4093   # <- replace with your real location
-BUILDING_LON = 49.8671   # <- replace with your real location
-RADIUS_METERS = 40
-MAX_ACCURACY_METERS = 30  # reject bad GPS readings
+BUILDING_LAT = 40.40663934042372   # <- replace with your real location
+BUILDING_LON = 49.848206791133954   # <- replace with your real location
+RADIUS_METERS = 50
+MAX_ACCURACY_METERS = 40  # reject bad GPS readings
 
 # ====== CONFIG: define your room layout here ======
 # Each "block" is a list of rows; each row is a list of pc IDs (or None for empty space).
